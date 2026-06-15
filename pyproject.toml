@@ -1,7 +1,7 @@
 [project]
-name = "cifar-10"
+name = "wm-811k"
 version = "0.1.0"
-description = "Add your description here"
+description = "CNN Classification of Wafer Defects on WM-811K Dataset"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
