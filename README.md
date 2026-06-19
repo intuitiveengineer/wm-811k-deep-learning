@@ -1,12 +1,12 @@
 # WM-811K Wafer Defect Classification
 
-This project applies a convolutional neural network to classify semiconductor wafer maps from the WM-811K dataset into nine categories: eight distinct defect patterns and a clean (no-defect) baseline. It's a portfolio project — the goal isn't to chase a leaderboard score, but to build a rigorous, well-reasoned ML pipeline that handles the real challenges this dataset throws at you: severe class imbalance, a predefined evaluation split, and tiny 45×48 pixel inputs.
+This project uses a convolutional neural network to classify semiconductor wafer maps from the WM-811K dataset into nine categories: eight distinct defect patterns plus a clean baseline. It's a portfolio project, so the focus is on building a principled, well-reasoned ML pipeline rather than chasing benchmark numbers. The dataset comes with some genuinely interesting challenges: severe class imbalance, a predefined evaluation split, and very small 45x48 pixel inputs.
 
 ---
 
 ## The Dataset
 
-The [WM-811K dataset](https://doi.org/10.1109/TSMC.2018.2841818) (MIR-WM811K) contains 811,457 wafer maps collected from real semiconductor manufacturing. Each wafer map is a small binary/ternary grid (45×48 pixels) encoding the pass/fail status of individual dies. Only 172,950 records are labeled, and the class distribution is highly skewed:
+The [WM-811K dataset](https://doi.org/10.1109/TSMC.2018.2841818) (MIR-WM811K) contains 811,457 wafer maps collected from real semiconductor manufacturing lines. You can download it from [Kaggle](https://www.kaggle.com/datasets/qingyi/wm811k-wafer-map). Each wafer map is a small grid (45x48 pixels) where each cell encodes the pass/fail status of an individual die. Of the 811k records, only 172,950 are labeled, and the class distribution is heavily skewed:
 
 | Failure type | Count |
 |---|---|
@@ -20,7 +20,7 @@ The [WM-811K dataset](https://doi.org/10.1109/TSMC.2018.2841818) (MIR-WM811K) co
 | Donut | 555 |
 | Near-full | 149 |
 
-The dataset ships with a predefined `trainTestLabel` split, which this project respects — the test set is never touched during training or validation.
+The dataset includes a predefined `trainTestLabel` split. This project respects that split and keeps the test set completely untouched until final evaluation.
 
 ---
 
@@ -29,13 +29,13 @@ The dataset ships with a predefined `trainTestLabel` split, which this project r
 ```
 notebooks/
   00-wm-811k-EDA.ipynb      Exploratory analysis: distributions, sample maps, shape checks
-  01-wm-811k-cnn.ipynb      Full CNN pipeline: training, evaluation, model comparison
+  01-wm-811k-cnn.ipynb      Full CNN pipeline: training, evaluation, and model comparison
 
 figures/                    Saved plots (training curves, confusion matrix, comparisons, etc.)
 tables/                     Saved metrics as Markdown tables
 
-data/                       Dataset file — gitignored, not included in the repo
-learning_log.md             Decision log explaining every design choice — gitignored
+data/                       Dataset file, gitignored and not included in the repo
+learning_log.md             A detailed decision log explaining the reasoning behind each design choice, also gitignored
 ```
 
 ---
@@ -43,34 +43,32 @@ learning_log.md             Decision log explaining every design choice — giti
 ## Pipeline highlights
 
 **No data leakage**
-The dataset's predefined train/test split is used as-is. Normalization statistics (mean, std) are computed from the training split only and applied to val and test. The test set is touched exactly once — for final evaluation.
+The predefined train/test split is used exactly as provided. Normalisation statistics are computed from the training split only, then applied consistently to validation and test data. The test set is only ever used once, for final evaluation.
 
 **Stratified validation split**
-Twenty percent of the training pool is held out as a validation set using stratified sampling, ensuring every class (including rare ones like Near-full) is represented proportionally.
+20% of the training pool is held out for validation using stratified sampling. This ensures every class, including rare ones like Near-full, is proportionally represented on both sides of the split.
 
 **Class-weighted loss**
-With 147k "none" samples vs 149 "Near-full" samples, a naive model can hit 85% accuracy by predicting "none" everywhere. Inverse-frequency class weights in `CrossEntropyLoss` give the rarer classes meaningful gradient signal.
+With 147k "none" samples sitting alongside just 149 "Near-full" samples, a model can reach 85% accuracy simply by predicting "none" every time. Inverse-frequency class weights applied to `CrossEntropyLoss` give the rarer classes meaningful gradient signal during training.
 
 **Label-preserving augmentation**
-Wafer maps have fourfold rotational symmetry — flipping and rotating 90° produces a valid map of the same defect type. RandomErasing (used in the second experiment) blanks a small random patch, simulating partial measurement loss and discouraging the model from fixating on specific spatial regions.
+Wafer maps have fourfold rotational symmetry, so horizontal flips, vertical flips, and 90 degree rotations all produce valid maps of the same defect type. The second experiment adds `RandomErasing`, which blanks a small random patch to simulate partial measurement loss and stop the model from leaning too heavily on specific spatial regions.
 
-**Early stopping + LR scheduling**
-`ReduceLROnPlateau` halves the learning rate when validation loss plateaus; `EarlyStopping` restores the best checkpoint and terminates training once improvement stalls for 10 consecutive epochs.
+**Early stopping and LR scheduling**
+`ReduceLROnPlateau` halves the learning rate whenever validation loss plateaus. `EarlyStopping` then restores the best checkpoint and halts training if no improvement is seen for 10 consecutive epochs. Both mechanisms work together to avoid overfitting without wasting compute.
 
 ---
 
 ## Results
 
-Full per-class metrics for each run are in [`tables/`](tables/). The summary comparison is below.
-
-See [`tables/model_comparison.md`](tables/model_comparison.md) for the live leaderboard — each experiment appends a row.
+Full per-class breakdowns for each run are saved in [`tables/`](tables/). The summary comparison is below, and [`tables/model_comparison.md`](tables/model_comparison.md) stays updated as new experiments are added.
 
 | Run | Accuracy | Macro F1 | Weighted F1 | Epochs |
 |-----|----------|----------|-------------|--------|
-| Baseline CNN | — | — | — | — |
-| Augmented CNN (+ RandomErasing) | — | — | — | — |
+| Baseline CNN | - | - | - | - |
+| Augmented CNN (+ RandomErasing) | - | - | - | - |
 
-> Run `notebooks/01-wm-811k-cnn.ipynb` top-to-bottom to populate these results.
+> Run `notebooks/01-wm-811k-cnn.ipynb` from top to bottom to populate these results.
 
 ---
 
@@ -78,12 +76,12 @@ See [`tables/model_comparison.md`](tables/model_comparison.md) for the live lead
 
 After running the notebook, the following plots are saved to `figures/`:
 
-- **`training_curves.png`** — loss and accuracy over epochs for the baseline run
-- **`training_curves_augmented.png`** — same for the augmented run
-- **`confusion_matrix.png`** — normalised confusion matrix for the baseline (recall per cell)
-- **`per_class_f1_baseline.png`** / **`per_class_f1_augmented.png`** — per-class F1 bar charts
-- **`sample_predictions_baseline.png`** / **`sample_predictions_augmented.png`** — 4×4 grids of test predictions with correct/wrong highlighting
-- **`model_comparison.png`** — grouped bar chart of accuracy, macro F1, and weighted F1 across runs
+- **`training_curves.png`** - loss and accuracy over epochs for the baseline run
+- **`training_curves_augmented.png`** - the same for the augmented run
+- **`confusion_matrix.png`** - normalised confusion matrix for the baseline, showing recall per cell
+- **`per_class_f1_baseline.png`** and **`per_class_f1_augmented.png`** - per-class F1 bar charts for each run
+- **`sample_predictions_baseline.png`** and **`sample_predictions_augmented.png`** - 4x4 grids of test predictions with correct and incorrect calls highlighted
+- **`model_comparison.png`** - grouped bar chart comparing accuracy, macro F1, and weighted F1 across all runs
 
 ---
 
@@ -97,6 +95,10 @@ uv sync
 jupyter notebook
 ```
 
-Open `notebooks/00-wm-811k-EDA.ipynb` for the exploratory analysis, then `notebooks/01-wm-811k-cnn.ipynb` for the full training pipeline. Run cells top-to-bottom — the pipeline is designed to execute sequentially without skipping steps.
+Start with `notebooks/00-wm-811k-EDA.ipynb` to get a feel for the data, then move on to `notebooks/01-wm-811k-cnn.ipynb` for the full training pipeline. Run the cells in order from top to bottom.
 
-The dataset file (`data/LSWMD_modern.pkl`) is not included in the repo. Place it in the `data/` directory before running.
+**Getting the data**
+
+Download `LSWMD.pkl` from [Kaggle](https://www.kaggle.com/datasets/qingyi/wm811k-wafer-map) and place it in the `data/` directory. The notebooks expect the file to be named `LSWMD.pkl`.
+
+One heads-up: the original file was serialised with an older version of pandas and numpy, so you may get an error trying to open it with a modern stack. If that happens, the fix is to load it in an environment with older versions of those libraries and re-save it as a fresh pickle. The notebook then reads the converted file without any issues.
