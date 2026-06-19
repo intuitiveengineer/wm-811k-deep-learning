@@ -3,4 +3,4 @@
 uv.lock
 data
 learning_log.md
-best_model.pt
+best_model*.pt
