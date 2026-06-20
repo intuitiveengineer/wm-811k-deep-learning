@@ -1,6 +1,6 @@
 # Model Comparison
 
-| Run                             |   Accuracy |   Macro F1 |   Weighted F1 |   Epochs |
-|:--------------------------------|-----------:|-----------:|--------------:|---------:|
-| Baseline CNN                    |     0.94   |   0.510426 |      0.935366 |       32 |
-| Augmented CNN (+ RandomErasing) |     0.9405 |   0.439354 |      0.929051 |       40 |
+| Run                           |   Accuracy |   Macro F1 |   Weighted F1 |   Epochs |
+|:------------------------------|-----------:|-----------:|--------------:|---------:|
+| Baseline CNN                  |   0.855862 |   0.555725 |      0.890729 |       59 |
+| Augmented CNN (+ Translation) |   0.862751 |   0.542285 |      0.893717 |       25 |
