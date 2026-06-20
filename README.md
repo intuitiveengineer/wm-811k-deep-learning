@@ -52,7 +52,13 @@ The predefined train/test split is used exactly as provided. Normalisation stati
 With 147k "none" samples sitting alongside just 149 "Near-full" samples, a model can reach 85% accuracy simply by predicting "none" every time. Inverse-frequency class weights applied to `CrossEntropyLoss` give the rarer classes meaningful gradient signal during training.
 
 **Label-preserving augmentation**
-Wafer maps have rotational symmetry, so horizontal flips, vertical flips, and 180-degree rotations all produce valid maps of the same defect type. 90° and 270° rotations are excluded because they transpose height and width on non-square maps, producing invalid shapes. The second experiment adds Gaussian pixel noise to test whether stochastic perturbation helps the model generalise.
+Wafer maps have rotational symmetry, so horizontal flips, vertical flips, and 180-degree rotations all produce valid maps of the same defect type. 90° and 270° rotations are excluded because they transpose height and width on non-square maps, producing invalid shapes.
+
+**WeightedRandomSampler**
+Rather than reweighting the loss, each training batch is constructed with balanced class representation using PyTorch's `WeightedRandomSampler`. Each sample is drawn with probability proportional to the inverse of its class count, so rare classes like Scratch and Near-full appear as often per batch as the dominant "none" class. This eliminates the gradient instability caused by combining extreme class weights with large batches.
+
+**CBAM attention (second experiment)**
+The second model adds CBAM (Convolutional Block Attention Module) after each conv block. Channel attention scores each feature channel 0–1; spatial attention produces a 2D heatmap highlighting where to focus. This is particularly useful for Edge-Loc, Edge-Ring, and Loc — three classes that share similar textures but differ by where on the wafer the defect sits.
 
 **Early stopping on val loss, checkpoint on best Macro F1**
 Accuracy is a misleading metric when one class makes up 85% of the data. `ReduceLROnPlateau` and `EarlyStopping` monitor validation loss as the convergence signal — it's stable and doesn't overfit to the tiny validation set. The best model checkpoint is saved separately whenever validation Macro F1 improves, so model selection and convergence detection are decoupled.
@@ -65,10 +71,10 @@ Full per-class breakdowns for each run are saved in [`tables/`](tables/). The su
 
 | Run | Accuracy | Macro F1 | Weighted F1 | Epochs |
 |-----|----------|----------|-------------|--------|
-| Baseline CNN | 0.852 | 0.542 | 0.888 | 62 |
-| Augmented CNN (+ Gaussian Noise) | 0.845 | 0.521 | 0.881 | 90 |
+| CNN + WeightedRandomSampler | — | — | — | — |
+| CNN + CBAM | — | — | — | — |
 
-> The primary metric is **Macro F1** — it weights every class equally and is far more informative than accuracy for this imbalanced dataset. Per-class breakdowns are in [`tables/classification_report_baseline.md`](tables/classification_report_baseline.md) and [`tables/classification_report_augmented.md`](tables/classification_report_augmented.md).
+> Results populate after a GPU run. The primary metric is **Macro F1** — it weights every class equally and is far more informative than accuracy for this imbalanced dataset. Per-class breakdowns are in [`tables/classification_report_baseline.md`](tables/classification_report_baseline.md) and [`tables/classification_report_augmented.md`](tables/classification_report_augmented.md).
 
 ---
 
@@ -94,12 +100,16 @@ Added `img + randn * 0.05` after normalisation. Macro F1: 0.543. Noise destroyed
 ### Run 5 — Dropout 0.6 + weight decay 1e-4 (batch 512, full dataset)
 Added `weight_decay=1e-4` to Adam and increased Dropout from 0.5 → 0.6 to address the train/val loss gap. Over-regularised the model. Macro F1: 0.542 (baseline) / 0.521 (with Gaussian noise). Worse than Run 3 in both cases.
 
-### Run 6 — Current (batch 4096, input 64×64, label smoothing, val-loss early stopping)
-Changes being tested:
-- `input_size` 32×32 → **64×64**: gives the model 4× more spatial resolution to detect fine features like Scratch (thin diagonal lines)
-- `gpu_batch_size` 1024 → **4096**: RTX-4090 was at 5% GPU utilisation; bigger batches keep the GPU busy and reduce DataLoader overhead
-- **Label smoothing 0.1**: replaces hard 0/1 targets with 0.1/0.9, encouraging the model to stay calibrated and avoid overconfident predictions on minority classes
-- **EarlyStopping on val loss**: decouples convergence detection (val loss, more stable) from model selection (best val F1 checkpoint saved separately)
+### Run 6 — 64×64 input + batch 4096 + val-loss early stopping
+Increased input resolution and batch size. Label smoothing was also tried but removed — it interacts badly with extreme class weights, creating unstable gradients and stalling the model at ~14% train accuracy. Without smoothing: Macro F1 0.546. Edge-Ring improved dramatically (+0.19) from the higher resolution, but Loc (−0.15) and Edge-Loc (−0.14) regressed, likely because at higher resolution both patterns look more similar to each other, making the model conflate them.
+
+Scratch remained near zero (F1 0.048) — precision was the problem (0.026), meaning the model over-predicted Scratch on non-Scratch samples. Diagnosis: with batch 4096 and ~400 Scratch training examples, each batch statistically contains only 2–3 Scratch samples even with class weights. The gradient signal is too sparse for the model to discriminate Scratch reliably.
+
+### Run 7 — CNN + WeightedRandomSampler (current)
+Replaced class-weighted loss with `WeightedRandomSampler`. Each batch now contains roughly equal representation of all 9 classes — Scratch and Near-full appear ~40–50 times per batch instead of 2–3. The loss function uses plain `CrossEntropyLoss()` with no class weights, since the sampler handles balance at the data level. This removes the gradient instability seen in previous runs.
+
+### Run 8 — CNN + CBAM (current, second experiment)
+Same WeightedRandomSampler as Run 7. Adds CBAM attention to each conv block: channel attention learns which feature channels matter for a given input; spatial attention learns a 2D heatmap of where in the map to focus. Motivated by the persistent confusion between Edge-Loc, Edge-Ring, and Loc — classes that differ primarily by spatial position rather than texture.
 
 ---
 
