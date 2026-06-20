@@ -52,10 +52,10 @@ The predefined train/test split is used exactly as provided. Normalisation stati
 With 147k "none" samples sitting alongside just 149 "Near-full" samples, a model can reach 85% accuracy simply by predicting "none" every time. Inverse-frequency class weights applied to `CrossEntropyLoss` give the rarer classes meaningful gradient signal during training.
 
 **Label-preserving augmentation**
-Wafer maps have rotational symmetry, so horizontal flips, vertical flips, and 180-degree rotations all produce valid maps of the same defect type. The second experiment adds a small random translation via `T.RandomAffine`, which shifts the die pattern slightly within the frame to simulate minor scanner misalignment without distorting the defect signature.
+Wafer maps have rotational symmetry, so horizontal flips, vertical flips, and 180-degree rotations all produce valid maps of the same defect type. 90° and 270° rotations are excluded because they transpose height and width on non-square maps, producing invalid shapes. The second experiment adds Gaussian pixel noise to test whether stochastic perturbation helps the model generalise.
 
-**Early stopping and LR scheduling on Macro F1**
-Accuracy is a misleading metric when one class makes up 85% of the data. Both `ReduceLROnPlateau` and `EarlyStopping` track validation Macro F1 instead, which treats every class equally regardless of how often it appears. The best checkpoint by Macro F1 is saved and restored at the end of training.
+**Early stopping on val loss, checkpoint on best Macro F1**
+Accuracy is a misleading metric when one class makes up 85% of the data. `ReduceLROnPlateau` and `EarlyStopping` monitor validation loss as the convergence signal — it's stable and doesn't overfit to the tiny validation set. The best model checkpoint is saved separately whenever validation Macro F1 improves, so model selection and convergence detection are decoupled.
 
 ---
 
@@ -65,10 +65,41 @@ Full per-class breakdowns for each run are saved in [`tables/`](tables/). The su
 
 | Run | Accuracy | Macro F1 | Weighted F1 | Epochs |
 |-----|----------|----------|-------------|--------|
-| Baseline CNN | - | - | - | - |
-| Augmented CNN (+ Translation) | - | - | - | - |
+| Baseline CNN | 0.852 | 0.542 | 0.888 | 62 |
+| Augmented CNN (+ Gaussian Noise) | 0.845 | 0.521 | 0.881 | 90 |
 
-> Run `notebooks/01-wm-811k-cnn.ipynb` from top to bottom to populate these results. The primary metric is **Macro F1** — it weights every class equally and is far more informative than accuracy for this imbalanced dataset.
+> The primary metric is **Macro F1** — it weights every class equally and is far more informative than accuracy for this imbalanced dataset. Per-class breakdowns are in [`tables/classification_report_baseline.md`](tables/classification_report_baseline.md) and [`tables/classification_report_augmented.md`](tables/classification_report_augmented.md).
+
+---
+
+## Experiment Log
+
+A running record of every training run, what changed, and what the results showed.
+
+### Run 1 — Baseline CNN (batch 64, shape-filtered dataset)
+Shape filter restricted training to maps of a single size (~18k of 172k rows). Macro F1: ~0.556. Established the pipeline but left 89% of the data unused.
+
+### Run 2 — Translation augmentation (batch 64, shape-filtered)
+Added `T.RandomAffine` translation to the training transform. Hurt edge classes (Edge-Loc, Edge-Ring) because those defect types are defined by *where* the defect sits on the wafer — translation moves the pattern away from its characteristic position. Macro F1: ~0.542. Removed translation from all future experiments.
+
+### Fix — Full dataset unlocked (T.Resize in transform pipeline)
+Removed the shape filter and added `T.Resize(32×32, NEAREST)` as the first transform. All 172k labeled rows now flow through training. This was the single biggest pipeline improvement.
+
+### Run 3 — Baseline CNN (batch 512, full dataset)
+First GPU run with the full dataset. 5× more minority-class training examples. Macro F1: **0.593** — best result so far. Scratch F1 remained near zero (~0.04) despite class weighting, likely because the thin diagonal line pattern is too fine to survive 3× MaxPool at 32×32.
+
+### Run 4 — Gaussian noise augmentation (batch 512, full dataset)
+Added `img + randn * 0.05` after normalisation. Macro F1: 0.543. Noise destroyed fine spatial features (especially Scratch and Loc patterns) without providing any useful regularisation. The model trained longer (90 epochs) because val F1 kept marginally ticking up while val loss was increasing — identified as an early-stopping bug (fixed in run 6+).
+
+### Run 5 — Dropout 0.6 + weight decay 1e-4 (batch 512, full dataset)
+Added `weight_decay=1e-4` to Adam and increased Dropout from 0.5 → 0.6 to address the train/val loss gap. Over-regularised the model. Macro F1: 0.542 (baseline) / 0.521 (with Gaussian noise). Worse than Run 3 in both cases.
+
+### Run 6 — Current (batch 4096, input 64×64, label smoothing, val-loss early stopping)
+Changes being tested:
+- `input_size` 32×32 → **64×64**: gives the model 4× more spatial resolution to detect fine features like Scratch (thin diagonal lines)
+- `gpu_batch_size` 1024 → **4096**: RTX-4090 was at 5% GPU utilisation; bigger batches keep the GPU busy and reduce DataLoader overhead
+- **Label smoothing 0.1**: replaces hard 0/1 targets with 0.1/0.9, encouraging the model to stay calibrated and avoid overconfident predictions on minority classes
+- **EarlyStopping on val loss**: decouples convergence detection (val loss, more stable) from model selection (best val F1 checkpoint saved separately)
 
 ---
 
