@@ -6,7 +6,7 @@ This project uses a convolutional neural network to classify semiconductor wafer
 
 ## The Dataset
 
-The [WM-811K dataset](https://doi.org/10.1109/TSMC.2018.2841818) (MIR-WM811K) contains 811,457 wafer maps collected from real semiconductor manufacturing lines. You can download it from [Kaggle](https://www.kaggle.com/datasets/qingyi/wm811k-wafer-map). Each wafer map is a small grid where each cell encodes the pass/fail status of an individual die. Maps vary in size across manufacturing lots; the pipeline resizes everything to 32x32 before training. Of the 811k records, only 172,950 are labeled, and the class distribution is heavily skewed:
+The [WM-811K dataset](https://doi.org/10.1109/TSMC.2018.2841818) (MIR-WM811K) contains 811,457 wafer maps collected from real semiconductor manufacturing lines. You can download it from [Kaggle](https://www.kaggle.com/datasets/qingyi/wm811k-wafer-map). Each wafer map is a small grid where each cell encodes the pass/fail status of an individual die. Maps vary in size across manufacturing lots; the pipeline resizes everything to 64×64 before training. Of the 811k records, only 172,950 are labeled, and the class distribution is heavily skewed:
 
 | Failure type | Count |
 |---|---|
@@ -48,14 +48,11 @@ The predefined train/test split is used exactly as provided. Normalisation stati
 **Stratified validation split**
 20% of the training pool is held out for validation using stratified sampling. This ensures every class, including rare ones like Near-full, is proportionally represented on both sides of the split.
 
-**Class-weighted loss**
-With 147k "none" samples sitting alongside just 149 "Near-full" samples, a model can reach 85% accuracy simply by predicting "none" every time. Inverse-frequency class weights applied to `CrossEntropyLoss` give the rarer classes meaningful gradient signal during training.
+**WeightedRandomSampler**
+With 147k "none" samples alongside just 149 "Near-full" samples, a model can reach 85% accuracy by predicting "none" every time. Rather than reweighting the loss, each training batch is constructed with balanced class representation using PyTorch's `WeightedRandomSampler`. Each sample is drawn with probability proportional to the inverse of its class count, so rare classes like Scratch and Near-full appear as often per batch as the dominant "none" class. The loss function uses plain `CrossEntropyLoss()` — the sampler handles balance at the data level, which is more stable than combining extreme loss weights with large batches.
 
 **Label-preserving augmentation**
-Wafer maps have rotational symmetry, so horizontal flips, vertical flips, and 180-degree rotations all produce valid maps of the same defect type. 90° and 270° rotations are excluded because they transpose height and width on non-square maps, producing invalid shapes.
-
-**WeightedRandomSampler**
-Rather than reweighting the loss, each training batch is constructed with balanced class representation using PyTorch's `WeightedRandomSampler`. Each sample is drawn with probability proportional to the inverse of its class count, so rare classes like Scratch and Near-full appear as often per batch as the dominant "none" class. This eliminates the gradient instability caused by combining extreme class weights with large batches.
+Wafer maps have rotational symmetry, so horizontal flips, vertical flips, and 180-degree rotations all produce valid maps of the same defect type. 90° and 270° rotations are excluded because they transpose height and width on non-square maps, producing invalid shapes. Translation augmentation was explored but removed — edge defects (Edge-Loc, Edge-Ring) are defined by where they sit on the wafer, so shifting them away from the edge destroys the label.
 
 **CBAM attention (second experiment)**
 The second model adds CBAM (Convolutional Block Attention Module) after each conv block. Channel attention scores each feature channel 0–1; spatial attention produces a 2D heatmap highlighting where to focus. This is particularly useful for Edge-Loc, Edge-Ring, and Loc — three classes that share similar textures but differ by where on the wafer the defect sits.
@@ -67,14 +64,28 @@ Accuracy is a misleading metric when one class makes up 85% of the data. `Reduce
 
 ## Results
 
-Full per-class breakdowns for each run are saved in [`tables/`](tables/). The summary comparison is below, and [`tables/model_comparison.md`](tables/model_comparison.md) stays updated as new experiments are added.
+Full per-class breakdowns for each run are saved in [`tables/`](tables/). The primary metric is **Macro F1** — it weights every class equally and is far more informative than accuracy for this imbalanced dataset.
 
 | Run | Accuracy | Macro F1 | Weighted F1 | Epochs |
 |-----|----------|----------|-------------|--------|
-| CNN + WeightedRandomSampler | — | — | — | — |
-| CNN + CBAM | — | — | — | — |
+| CNN + WeightedRandomSampler | 0.899 | 0.561 | 0.915 | 53 |
+| CNN + CBAM | 0.947 | 0.656 | 0.949 | 69 |
 
-> Results populate after a GPU run. The primary metric is **Macro F1** — it weights every class equally and is far more informative than accuracy for this imbalanced dataset. Per-class breakdowns are in [`tables/classification_report_baseline.md`](tables/classification_report_baseline.md) and [`tables/classification_report_augmented.md`](tables/classification_report_augmented.md).
+Per-class breakdowns: [`tables/classification_report_baseline.md`](tables/classification_report_baseline.md) and [`tables/classification_report_augmented.md`](tables/classification_report_augmented.md).
+
+### Per-class F1 breakdown (final model: CNN + CBAM)
+
+| Class | F1 | Precision | Recall | Notes |
+|---|---|---|---|---|
+| none | 0.977 | 0.983 | 0.971 | Dominant class, well-learned |
+| Near-full | 0.890 | 0.885 | 0.895 | Small support (95 test), high F1 |
+| Random | 0.727 | 0.784 | 0.677 | Distinct pattern, learned well |
+| Donut | 0.661 | 0.592 | 0.747 | Rare but visually distinctive |
+| Edge-Ring | 0.695 | 0.689 | 0.701 | Plateaued — both models identical |
+| Edge-Loc | 0.584 | 0.487 | 0.729 | Improved +0.17 with CBAM |
+| Center | 0.549 | 0.474 | 0.654 | Moderate — confused with Loc |
+| Loc | 0.524 | 0.625 | 0.451 | Improved +0.26 with CBAM |
+| **Scratch** | **0.298** | **0.269** | **0.335** | **Hardest class — too few examples** |
 
 ---
 
@@ -89,7 +100,7 @@ Shape filter restricted training to maps of a single size (~18k of 172k rows). M
 Added `T.RandomAffine` translation to the training transform. Hurt edge classes (Edge-Loc, Edge-Ring) because those defect types are defined by *where* the defect sits on the wafer — translation moves the pattern away from its characteristic position. Macro F1: ~0.542. Removed translation from all future experiments.
 
 ### Fix — Full dataset unlocked (T.Resize in transform pipeline)
-Removed the shape filter and added `T.Resize(32×32, NEAREST)` as the first transform. All 172k labeled rows now flow through training. This was the single biggest pipeline improvement.
+Removed the shape filter and added `T.Resize(64×64, NEAREST)` as the first transform. All 172k labeled rows now flow through training. This was the single biggest pipeline improvement.
 
 ### Run 3 — Baseline CNN (batch 512, full dataset)
 First GPU run with the full dataset. 5× more minority-class training examples. Macro F1: **0.593** — best result so far. Scratch F1 remained near zero (~0.04) despite class weighting, likely because the thin diagonal line pattern is too fine to survive 3× MaxPool at 32×32.
@@ -105,11 +116,52 @@ Increased input resolution and batch size. Label smoothing was also tried but re
 
 Scratch remained near zero (F1 0.048) — precision was the problem (0.026), meaning the model over-predicted Scratch on non-Scratch samples. Diagnosis: with batch 4096 and ~400 Scratch training examples, each batch statistically contains only 2–3 Scratch samples even with class weights. The gradient signal is too sparse for the model to discriminate Scratch reliably.
 
-### Run 7 — CNN + WeightedRandomSampler (current)
-Replaced class-weighted loss with `WeightedRandomSampler`. Each batch now contains roughly equal representation of all 9 classes — Scratch and Near-full appear ~40–50 times per batch instead of 2–3. The loss function uses plain `CrossEntropyLoss()` with no class weights, since the sampler handles balance at the data level. This removes the gradient instability seen in previous runs.
+### Run 7 — CNN + WeightedRandomSampler
+Replaced class-weighted loss with `WeightedRandomSampler`. Each batch now contains roughly equal representation of all 9 classes — Scratch and Near-full appear ~40–50 times per batch instead of 2–3. The loss function uses plain `CrossEntropyLoss()` with no class weights, since the sampler handles balance at the data level. Macro F1: **0.561**. Scratch improved from 0.048 → 0.055 — marginal.
 
-### Run 8 — CNN + CBAM (current, second experiment)
-Same WeightedRandomSampler as Run 7. Adds CBAM attention to each conv block: channel attention learns which feature channels matter for a given input; spatial attention learns a 2D heatmap of where in the map to focus. Motivated by the persistent confusion between Edge-Loc, Edge-Ring, and Loc — classes that differ primarily by spatial position rather than texture.
+### Run 8 — CNN + CBAM
+Same WeightedRandomSampler as Run 7. Adds CBAM attention to each conv block. Macro F1: **0.656** — the best result in this project. The gains were concentrated exactly where the hypothesis predicted: Loc (+0.26), Scratch (+0.24), Edge-Loc (+0.17). Spatial attention gave the model an explicit mechanism to distinguish defects by position, not just texture.
+
+---
+
+## What we learned
+
+**WeightedRandomSampler helped but didn't solve the root problem.**
+The sampler ensures every class appears frequently in each batch. That helped batch-sparse classes like Loc and Edge-Loc considerably, and CBAM's spatial attention amplified those gains further. But Scratch remains the hardest class at F1 0.298, and the reason is a data scarcity problem, not a model capacity or sampling problem. There are only 1,193 labeled Scratch wafers in the entire dataset, of which ~953 land in training after the predefined split. The Scratch pattern — a thin diagonal line across the wafer — is visually distinct from every other class, but the model has so few real examples to learn from that it can only partially generalise.
+
+**The val F1 vs test F1 gap is real.**
+The best CBAM validation F1 was 0.946; the test Macro F1 is 0.656. This isn't overfitting in the usual sense — the training pool is ~68% "none", so the validation set mirrors that. But the test set is 93% "none" (110k of 118k samples). A model trained with a balanced sampler learns to be more aggressive about predicting minority classes. On the validation set (68% none), this is fine. On the test set (93% none), there are many more "none" samples for the model to accidentally predict as defects, which tanks minority-class precision. This distribution mismatch between training and test is a structural property of the WM-811K predefined split, not something solvable with a different sampler strategy.
+
+**Edge-Ring plateaued exactly the same in both models (F1 0.695).**
+CBAM gave zero improvement here. This is interesting — it suggests Edge-Ring's difficulty isn't about spatial attention (both models learned its position equally well) but about something at the feature level, likely confusion with Edge-Loc. Both defects sit at the wafer edge; Edge-Ring forms a full ring while Edge-Loc is a partial arc. At 64×64 the model may not have enough resolution to reliably distinguish a full ring from a partial one in borderline cases.
+
+---
+
+## Potential next step: synthetic minority generation
+
+The most principled fix for Scratch (and to a lesser extent Donut and Near-full) is to generate synthetic training examples using a **convolutional autoencoder** trained on the real minority-class maps.
+
+**How it works:**
+
+A convolutional autoencoder has two halves. The encoder compresses a 64×64 wafer map down to a small latent vector (e.g., 64 floats) through a stack of conv + pool layers — this forces it to learn a compact representation of what makes a Scratch look like a Scratch. The decoder then uses transposed convolutions (the reverse of pooling) to reconstruct the original map from that latent vector. Training minimises the pixel-wise reconstruction error between input and output.
+
+Once trained, you can generate new Scratch maps by:
+1. Encoding all real Scratch wafers to get their latent vectors
+2. Slightly perturbing those vectors (adding small random noise)
+3. Decoding the perturbed vectors back to 64×64 maps
+
+The result is a set of synthetic wafer maps that look plausibly like real Scratch defects but are not exact copies. These are added to the training set before the classifier runs, giving it 5–10× more Scratch examples to learn from.
+
+**Why this is more principled than oversampling:**
+`WeightedRandomSampler` with `replacement=True` repeats the same ~953 Scratch maps over and over. The model memorises them rather than generalising. Synthetic generation produces genuinely new examples that interpolate through the space of Scratch patterns, giving the model novel variation to learn from.
+
+**What it would take in this project:**
+- A new notebook section or separate notebook training an autoencoder per minority class (Scratch, Donut, Near-full)
+- Generation of synthetic maps, visual inspection to confirm they look reasonable
+- Augmenting the training dataframe with synthetic rows before building the DataLoader
+- Rerunning the classifier with the expanded training set
+
+This is the approach used in recent semiconductor defect classification literature — a 2026 Frontiers paper combining autoencoder upsampling, "none" downsampling, and CBAM reports 99.83% macro F1 on a similar setup. The gap between that result and the 0.656 achieved here is almost entirely explained by the synthetic data — the model architecture and attention mechanism are very similar.
 
 ---
 
@@ -117,12 +169,12 @@ Same WeightedRandomSampler as Run 7. Adds CBAM attention to each conv block: cha
 
 After running the notebook, the following plots are saved to `figures/`:
 
-- **`training_curves.png`** - loss, accuracy, and val Macro F1 over epochs for the baseline run
-- **`training_curves_augmented.png`** - the same for the augmented run
-- **`confusion_matrix.png`** - normalised confusion matrix for the baseline, showing recall per cell
-- **`per_class_f1_baseline.png`** and **`per_class_f1_augmented.png`** - per-class F1 bar charts for each run
-- **`sample_predictions_baseline.png`** and **`sample_predictions_augmented.png`** - 4x4 grids of test predictions with correct and incorrect calls highlighted
-- **`model_comparison.png`** - grouped bar chart comparing accuracy, macro F1, and weighted F1 across all runs
+- **`training_curves.png`** — loss, accuracy, and val Macro F1 over epochs for the baseline run
+- **`training_curves_augmented.png`** — the same for the CBAM run
+- **`confusion_matrix.png`** — normalised confusion matrix for the baseline, showing recall per cell
+- **`per_class_f1_baseline.png`** and **`per_class_f1_augmented.png`** — per-class F1 bar charts for each run
+- **`sample_predictions_baseline.png`** and **`sample_predictions_augmented.png`** — 4×4 grids of test predictions with correct and incorrect calls highlighted
+- **`model_comparison.png`** — grouped bar chart comparing accuracy, macro F1, and weighted F1 across all runs
 
 ---
 
